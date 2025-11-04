@@ -13,16 +13,19 @@ import (
 	"unsafe"
 )
 
+const kmerLen = 6
+
 type Stack []*Interval
 type Interval struct {
 	Idx int
 	Lcp int
 }
 type Esa struct {
-	T   []byte
-	Sa  []int
-	Lcp []int
-	Cld []int
+	T        []byte
+	Sa       []int
+	Lcp      []int
+	Cld      []int
+	lcpCache []Minterval
 }
 type Minterval struct {
 	I, J int
@@ -47,6 +50,146 @@ func (e *Esa) MatchPref(p []byte) *Minterval {
 	parent = new(Minterval)
 	parent.I = 0
 	parent.J = len(e.T) - 1
+	for k < m {
+		child = e.GetInterval(parent, p[k])
+		if child == nil {
+			parent.L = k
+			return parent
+		}
+		l := m
+		i := child.I
+		j := child.J
+		if i < j {
+			r := 0
+			if e.Lcp[i] <= e.Lcp[j+1] {
+				r = e.Cld[j]
+			} else {
+				r = e.Cld[i]
+			}
+			l = min(l, e.Lcp[r])
+		}
+		for w := k + 1; w < l; w++ {
+			if e.T[e.Sa[i]+w] != p[w] {
+				child.L = w
+				return child
+			}
+		}
+		k = l
+	}
+	child.L = k
+	return child
+}
+func (e *Esa) buildLcpCache() {
+	cacheSize := 1 << (2 * kmerLen)
+	e.lcpCache = make([]Minterval, cacheSize)
+	var emptyIv = Minterval{I: -1, J: -1, L: 0}
+	for i := range e.lcpCache {
+		e.lcpCache[i] = emptyIv
+	}
+	kmer := make([]byte, kmerLen)
+	lenT := len(e.T)
+	m := e.Cld[lenT-1] // left child
+	rootIv := Minterval{I: 0, J: lenT - 1, L: e.Lcp[m]}
+	e.walkKmerTrie(kmer, 0, rootIv)
+}
+func (e *Esa) walkKmerTrie(kmer []byte,
+	currentK int, iv Minterval) {
+	if currentK < kmerLen && iv.I == -1 && iv.J == -1 {
+		e.fillKmerSubtree(kmer, currentK, iv)
+		return
+	}
+	if currentK >= kmerLen {
+		e.fillKmerSubtree(kmer, currentK, iv)
+		return
+	}
+
+	for code := int8(0); code < 4; code++ {
+		kmer[currentK] = code2byte(code)
+
+		child := iv
+
+		ij := e.GetInterval(&child, kmer[currentK])
+
+		if ij == nil {
+			e.fillKmerSubtree(kmer, currentK+1, iv)
+			continue
+		}
+		if ij.I == ij.J {
+			ij.L = currentK + 1
+			e.fillKmerSubtree(kmer, currentK+1, *ij)
+			continue
+		}
+		if ij.L <= currentK+1 {
+			e.walkKmerTrie(kmer, currentK+1, *ij)
+			continue
+		}
+		i, j := ij.I, ij.J
+		var mid int
+		if e.Lcp[i] <= e.Lcp[j+1] {
+			mid = e.Cld[j]
+		} else {
+			mid = e.Cld[i]
+		}
+		l := e.Lcp[mid]
+		if ij.L > currentK+1 {
+			next := *ij
+			next.L = ij.L
+
+			if l >= kmerLen {
+				e.fillKmerSubtree(kmer, currentK+1, iv)
+				continue
+			}
+			i := child.I
+			ok := true
+			for t := currentK + 1; t < ij.L; t++ {
+				b := e.T[e.Sa[i]+t]
+				if byte2code(b) < 0 {
+					ok = false
+					e.fillKmerSubtree(kmer, t, next)
+					break
+				}
+				kmer[t] = b
+			}
+			if ok {
+				e.walkKmerTrie(kmer, ij.L, next)
+			}
+			return
+		}
+	}
+}
+func (e *Esa) fillKmerSubtree(kmer []byte,
+	currentK int, iv Minterval) {
+
+	if currentK < kmerLen {
+		for code := int8(0); code < 4; code++ {
+			kmer[currentK] = code2byte(code)
+			e.fillKmerSubtree(kmer, currentK+1, iv)
+		}
+		return
+	} else {
+		idx, ok := kmer2index(kmer)
+		if !ok {
+			return
+		}
+		e.lcpCache[idx] = iv
+	}
+}
+func (e *Esa) MatchPrefCached(p []byte) *Minterval {
+	m := len(p)
+	if m <= kmerLen {
+		return e.MatchPref(p)
+	}
+	idx, ok := kmer2index(p[0:kmerLen])
+	if !ok {
+		return e.MatchPref(p)
+	}
+	ij := e.lcpCache[idx]
+	if ij.I < 0 || (ij.I == 0 && ij.J == 0 && ij.L == 0) { // assuming the cache prefilled with {I:-1,J:-1,L:0}
+		return e.MatchPref(p)
+	}
+	k := ij.L
+	parent := &ij
+	var child *Minterval
 	for k < m {
 		child = e.GetInterval(parent, p[k])
 		if child == nil {
@@ -165,6 +308,7 @@ func MakeEsa(t []byte) *Esa {
 	esa.Lcp = Lcp(esa.T, esa.Sa)
 	esa.Lcp = append(esa.Lcp, -1)
 	esa.Cld = Cld(esa.Lcp)
+	esa.buildLcpCache()
 	return esa
 }
 func min(i, j int) int {
@@ -207,4 +351,37 @@ func (e *Esa) GetInterval(iv *Minterval, c byte) *Minterval {
 		return iv
 	}
 	return nil
+}
+
+var byteCodes [256]int8
+
+func init() {
+	for i := range byteCodes {
+		byteCodes[i] = -1
+	}
+	byteCodes['A'] = 0
+	byteCodes['C'] = 1
+	byteCodes['G'] = 2
+	byteCodes['T'] = 3
+}
+
+func byte2code(b byte) int8 {
+	return byteCodes[b]
+}
+
+var codedByte = [4]byte{'A', 'C', 'G', 'T'}
+
+func code2byte(c int8) byte {
+	return codedByte[c&3]
+}
+func kmer2index(kmer []byte) (int, bool) {
+	idx := 0
+	for i := 0; i < kmerLen; i++ {
+		c := byte2code(kmer[i])
+		if c < 0 {
+			return 0, false
+		}
+		idx = (idx << 2) | int(c)
+	}
+	return idx, true
 }

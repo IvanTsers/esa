@@ -117,7 +117,7 @@
 
   The divsufsort library is written in C, so our package outline
   contains hooks for bridging the gap between Go and C, as well as for
-  imports, constants, types, methods, and functions.
+  imports, types, methods, and functions.
 #+end_src
 #+begin_src go <<esa.go>>=
   package esa
@@ -125,7 +125,6 @@
   import (
 	  //<<Imports>>
   )
-  //<<Constants>>
   //<<Types>>
   //<<Methods>>
   //<<Functions>>
@@ -456,8 +455,9 @@
   !corresponding enhanced suffix array.
 
   We append a sentinel to the text and a stop element to the lcp array.
-  We also initialize an lcp cache with the method \ty{buildLcpCache},
-  which we will define shortly.
+  We also build an lcp cache with the method \ty{buildLcpCache}, which
+  we will define in Section~\ref{lcp_cache}. We cache intervals for
+  6-mers by default.
 #+end_src
 #+begin_src go <<Functions>>=
   func MakeEsa(t []byte) *Esa {
@@ -468,6 +468,7 @@
 	  esa.Lcp = Lcp(esa.T, esa.Sa)
 	  esa.Lcp = append(esa.Lcp, -1)
 	  esa.Cld = Cld(esa.Lcp)
+	  esa.KmerLen = 6
 	  esa.buildLcpCache()
 	  return esa
   }
@@ -476,7 +477,7 @@
   \subsection{Type \ty{Esa}}
   !\texttt{Esa} is an enhanced suffix array consisting of the underlying
   !text, the suffix array, the longest common prefix array, the child
-  !array, and the cache of lcp match intervals.
+  !array, the length of cached k-mers and a cache of lcp match intervals.
 
   The lcp interval cache will be described in Section~\ref{lcp_cache}.
 #+end_src
@@ -486,7 +487,15 @@
 	  Sa []int
 	  Lcp []int
 	  Cld []int
+	  KmerLen int
 	  lcpCache []Minterval
+
+	  //Debug fields
+	  GetIntervalCallsInBuildCache int
+	  GetIntervalCallsInMatchPref int
+	  LcpCacheHits int
+	  MatchPrefCalls int
+	  MatchPrefCachedCalls int
   }
 #+end_src
 #+begin_src latex
@@ -513,6 +522,8 @@
 #+end_src
 #+begin_src go <<Methods>>=
   func (e *Esa) MatchPref(p []byte) *Minterval {
+	  //debug
+	  e.MatchPrefCalls += 1
 	  k := 0
 	  m := len(p)
 	  var parent, child *Minterval
@@ -543,6 +554,9 @@
 #+begin_src go <<Iterate over pattern>>=
   for k < m {
 	  child = e.GetInterval(parent, p[k])
+	  //debug
+	  e.GetIntervalCallsInMatchPref += 1
+	  //
 	  if child == nil {
 		  parent.L = k
 		  return parent
@@ -631,8 +645,9 @@
 #+end_src
 #+begin_src go <<Deal with singleton interval>>=
   if e.T[e.Sa[i]] == c {
-	  return iv
+  	return iv
   }
+  return nil
 #+end_src
 #+begin_src latex
   A proper interval is analyzed by determining the new match length and
@@ -666,14 +681,14 @@
 #+begin_src go <<Iterate over child intervals>>=
   k := i
   for e.Lcp[m] == l {
-	  if e.T[e.Sa[k]+l] == c {
-		  iv.I = k
-		  iv.J = m - 1
-		  return iv
-	  }
-	  k = m
-	  if k == j { break }
-	  m = e.Cld[m]
+  	if e.T[e.Sa[k]+l] == c {
+  		iv.I = k
+  		iv.J = m - 1
+  		return iv
+  	}
+  	k = m
+  	if k == j { break }
+  	m = e.Cld[m]
   }
 #+end_src
 #+begin_src latex
@@ -692,7 +707,7 @@
   sequence scattered cross a genome. For example, \ty{GGGGGG} is found
   43 times, \ty{TATATA} is found 246 times, and \ty{CATGCA} is found 125
   times in the genomic assembly \ty{GCF\_020736045.1} of
-  \textit{Haemophilus influenze}, which has about 1.9 million
+  \textit{H. influenze}, which has about 1.9 million
   nucleotides in total.
 
   Take a subject \ty{ACGGG\textbf{AAAGCG}GAT} and a query
@@ -709,18 +724,12 @@
   The number of all possible $k$-mers consisting of four nucelotides
   \ty{[A, C, G, T]} is $4^{k}$. For example, there is 4096 6-mers. We
   could find lcp intervals containing any of these 6-mers, save them
-  into a cache, and look them up during prefix matching. The cache is a
-  map that stores lcp intervals as values and $k$-mers as keys:
-  \ty{[kmer]lcp}. We will implement such a cache in this package. To do
-  this, we have to solve two problems: find keys (find and place all
-  possible $k$-mers in the cache) and find corresponding lcp intervals
-  for them.
-
-  We begin with setting the $k$-mer length to 6 so the cache stores
-  6-mers. We will define the method for building the cache shortly.
-#+end_src
-#+begin_src go <<Constants>>=
-  const kmerLen = 6
+  into a cache, and look them up during prefix matching. The cache is an
+  array that stores lcp intervals, \ty{lcpCache[i]}, where \ty{i} is an
+  index corresponding to a $k$-mer. We will implement such a cache in
+  this package. To do this, we have to solve two problems: find indexes
+  (find and place all possible $k$-mers in the cache), and find lcp
+  intervals.
 #+end_src
 #+begin_src latex
   \subsection{Method \ty{buildLcpCache}}
@@ -731,6 +740,7 @@
 #+end_src
 #+begin_src go <<Methods>>=
   func (e *Esa) buildLcpCache() {
+	  kmerLen := e.KmerLen
 	  cacheSize := 1 << (2 * kmerLen)
 	  e.lcpCache = make([]Minterval, cacheSize)
 	  var emptyIv = Minterval{I: -1, J: -1, L: 0}
@@ -741,27 +751,10 @@
   }
 #+end_src
 #+begin_src latex
-  \subsubsection{Cache keys: find k-mer indexes}
-  There are 4096 possible 6-mers of four nucleotides. To find them all,
-  one could start with, for example \ty{AAAAAA}, then replace one
-  nucleotide at a time: \ty{TAAAAA}, \ty{CAAAAA}, \ty{GAAAAA}, and so
-  on. Once all combinations are found, one would query the cache array
-  like
-
-  \begin{verbatim}
-  lcpCache["AAAACT"],
-  \end{verbatim}
-
-  which implies calculating the hash for \ty{AAAACT} every time we try
-  to access its value in the map. As 6-mers are quite widespread in
-  genomes, we expect re-calculation of the same hash hunderds of times
-  for each possible $k$-mer in the worst case. Hashing requires several
-  operations (sum, multiply, allocate, potentially garbage collector
-  management), so frequent access to a map introduces a scaling
-  overhead. The lcp cache is useful only if lookups take constant time
-  $O(1)$. This time complexity is achievable if we reduce the
-  string-to-hash lookups to basic integer arithmetics in a limited
-  space.
+  \subsubsection{Find k-mer indexes}
+  An input $k$-mer is an array of bytes. We want to convert this array
+  into an integer index to an array. For this, we need to write a
+  fast hashing function.
 
   The DNA alphabet has four letters, which can be encoded with 2 bits
   corresponding to 4 decimal integers:
@@ -778,12 +771,10 @@
       .. 4095]$}. This number can be used as a direct array index into
   the cache. For example, \ty{ATCCGA} becomes $001101011000_2$, or
   $856_{10}$, so we can find its lcp match interval at
-  \ty{lcpCache[856]}, string hashing not required.
+  \ty{lcpCache[856]}.
 
   We describe how we convert bytes to codes and vice versa in the
-  section for functions. \textbf{Note that the lcp cache will work only
-    if the input sequences contain only uppercase \ty{ACGT}
-    nucleotides}.
+  section for functions.
 #+end_src
 #+begin_src go <<Functions>>=
   //<<Convert byte to code>>
@@ -828,15 +819,12 @@
   }
 #+end_src
 #+begin_src latex
-  Now we are ready to calculate cache indexes for $k$-mers.  The
-  function \ty{kmer2index} accepts a slice of \ty{ACTG} bytes and
-  returns its 2-bit code as a decimal integer.
-
-  Consider the 6-mer \ty{TGCATC}. If we encode the nucleotides as \ty{[A
-      = 0, C = 1, G = 2, T = 3]}, we get the array of 2-bit codes
-  \ty{[3, 2, 1, 0, 3, 1]}. We want to turn this array into a single
-  integer index. We take the initial index, zero, shift its bits to the
-  left by 2 bits (in terms of decimal operations, quadruple it):
+  Now we are ready to calculate cache indexes for $k$-mers. Consider the
+  6-mer \ty{TGCATC}. If we encode the nucleotides as \ty{[A = 0, C = 1,
+      G = 2, T = 3]}, we get the array of 2-bit codes \ty{[3, 2, 1, 0,
+      3, 1]}. We want to turn this array into a single integer index. We
+  take the initial index, zero, shift its bits to the left by 2 bits (in
+  terms of decimal operations, quadruple it):
 
   \begin{gather*}
     0_{10} \ll 2_{10} \\
@@ -918,10 +906,10 @@
   We define the function \ty{kmer2index}, which performs the
   calculations described above. We initialize the index, convert each
   byte of the $k$-mer to a 2-bit code and shift the index accordingly.
-  \textit{Remember: the \ty{kmerLen} is a package-wise constant}.
 #+end_src
 #+begin_src go <<Functions>>=
   func kmer2index(kmer []byte) (int, bool) {
+	  kmerLen := len(kmer)
 	  idx := 0
 	  for i := 0; i < kmerLen; i++ {
 		  c := byte2code(kmer[i])
@@ -932,14 +920,44 @@
   }
 #+end_src
 #+begin_src latex
-  \subsubsection{Cache values: find k-mer LCP intervals}
-  Now that we know how to find the cache's keys, we deal with cache's
-  values.  We initialize a $k$-mer, find the root lcp interval of the
-  ESA's lcp table and call the helper method \ty{walkKmerTrie}, which is
-  not wrtitten yet.
+  \subsubsection{Find k-mer LCP intervals}
+  Now that we know how to index the cachde, we deal with cached
+  values. Our goal is to find lcp intervals with longest matches for
+  each $k$-mer.
+
+  \newpage
+
+  Consider the text \ty{ACGGGAAAGCGGAT} and its abridged ESA:
+
+  \begin{verbatim}
+    i  sa suffix         lcp cld
+    -  -- ------         --- ---
+    0  14                -1  16
+    1  5  AAAGCGGAT      0   6
+    2  6  AAGCGGAT       2   2
+    3  0  ACGGGAAAGCGGAT 1   4
+    4  7  AGCGGAT        1   5
+    5  12 AT             1   3
+    6  9  CGGAT          0   8
+    ...
+  \end{verbatim}
+
+  Let's say we want to find lcp intervals for the 3-mer \ty{AAA}. We see
+  in the ESA that there is a singleton interval \ty{[1..1]}, which holds
+  the only suffix \ty{AAAGCGGAT}. The next the 3-mer \ty{AAC} does not
+  match completely any of the suffixes. The longest matches for \ty{AAC}
+  are found in the interval \ty{[1..2]}, that is, in the suffixes
+  \ty{AAAGCGGAT} and \ty{AAGCGGAT}. Although our text does not contain
+  suffixes starting with \ty{AAC}, a query absolutely can start with
+  \ty{AAC}, so the partial match is still worth saving.
+
+
+  We initialize a $k$-mer, find the root lcp interval of the ESA's lcp
+  table and call the helper method \ty{walkKmerTrie}, which is not
+  wrtitten yet.
 #+end_src
 #+begin_src go <<Find k-mer intervals>>=
-  kmer := make([]byte, kmerLen)
+  kmer := make([]byte, e.KmerLen)
   //<<Find root interval>>
   e.walkKmerTrie(kmer, 0, rootIv)
 #+end_src
@@ -966,6 +984,9 @@
 #+begin_src go <<Methods>>=
   func (e *Esa) walkKmerTrie(kmer []byte,
 	  currentK int, iv Minterval) {
+	
+	  kmerLen := e.KmerLen
+	
 	  //<<Return early>>
 	  //<<Deal with a leaf k-mer>>
 
@@ -1001,21 +1022,23 @@
   We fill the current position in the growing $k$-mer with an encoded
   nucleotide. Then we use the \ty{GetInterval} function to check if such
   an extended $k$-mer exists in the ESA. After that, we respond to the
-  output of \ty{GetInterval}: no match (the extension doesn't exist), a
-  match is a singleton interval, or a match is shorter than
-  \texttt{kmerLen} (that is, there's a match deeper in the tree).
+  output of \ty{GetInterval}: no such interval (the extension doesn't
+  exist) or a singleton interval (further extension is not possible). We
+  get the interval's path label length, and deal with further extensions
+  (that is, there's a longer interval deeper in the tree). Then we deal
+  with a long edge.
 #+end_src
 #+begin_src go <<Extend the k-mer with a nucleotide>>=
   kmer[currentK] = code2byte(code)
-
-  child := iv
-
-  ij := e.GetInterval(&child, kmer[currentK])
+  parent := iv
+  ij := e.GetInterval(&parent, kmer[currentK])
+  e.GetIntervalCallsInBuildCache += 1
 
   //<<The extension doesn't exist>>
   //<<The extension is a singleton interval>>
+  //<<Get length of path label for \ty{ij}>>
   //<<Further extension is possible>>
-  //<<Fast-forward long edge>>
+  //<<Deal with a long edge>>
 #+end_src
 #+begin_src latex
 If we find no matches for the current $k$-mer, this extension doesn’t
@@ -1040,6 +1063,19 @@ with the current match.
   }
 #+end_src
 #+begin_src latex
+  We determine the length of the path label of the child array.
+#+end_src
+#+begin_src go <<Get length of path label for \ty{ij}>>=
+  i, j := ij.I, ij.J
+  var mid int
+  if e.Lcp[i] <= e.Lcp[j+1] {
+	    mid = e.Cld[j]
+    } else {
+	    mid = e.Cld[i]
+    }
+  ij.L = e.Lcp[mid]
+#+end_src
+#+begin_src latex
 If multiple suffixes of the subject match the current $k$-mer, we can
 extend it. We add one to the current $k$ and go one level deeper in
 the $k$-mer trie calling the \ty{walkKmerTrie} recursively to see
@@ -1057,80 +1093,52 @@ which of the possible extensions exist (\ty{A}, \ty{C}, \ty{G}, or
   interval. For example, the current $k$-mer \ty{GCA} matched an the
   edge \ty{GCATA}. No other suffixes start with \ty{GCA*} at this point,
   so there are no branches between depths 3 and 5. We could skip two
-  one-letter extensions and jump to the depth 5 (fast-forward the lcp
-  interval).
+  one-letter extensions and fast-forward to the depth 5.
 
-  We calculate child's node depth.  If the current match is longer than
-  the possible $k$-mer extension, we copy the interval, define a
-  condition to stop the fast-forwarding and copy known nucleotides from
-  the long edge to the $k$-mer.
+  We check if the long edge fits the cache. If so, we fast-forward the
+  edge. If the edge doesn't fit the cache, we pre-fill all $k$-mer
+  indexes under this extension with the parent lcp interval.
 #+end_src
-#+begin_src go <<Fast-forward long edge>>=
-  //<<Calculate child node depth>>
-  if ij.L > currentK + 1 {
-	  next := *ij
-	  next.L = ij.L
-
-	  //<<Stop fast-forwarding>>
-	  //<<Copy known nucleotides to the k-mer>>
-  }
-#+end_src
-#+begin_src latex
-#+end_src
-#+begin_src go <<Calculate child node depth>>=
-  i, j := ij.I, ij.J
-  var mid int
-  if e.Lcp[i] <= e.Lcp[j+1] {
-	  mid = e.Cld[j]
-  } else {
-	  mid = e.Cld[i]
-  }
-  l := e.Lcp[mid]
-#+end_src
-#+begin_src latex
-  We fill the $k$-mer subtrie if we have already reached or overshot the
-  cached $k$-mer length.
-#+end_src
-#+begin_src go <<Stop fast-forwarding>>=
-  if l >= kmerLen {
+#+begin_src go <<Deal with a long edge>>=
+  if ij.L >= kmerLen {
 	  e.fillKmerSubtree(kmer, currentK + 1, iv)
 	  continue
   }
+  //<<Fast-forward long edge>>
 #+end_src
 #+begin_src latex
-  We read bytes of the text found at the long interval. We validate each
-  byte and extend the $k$-mer with them. Once we are done with that, we
-  continue further traversal of the $k$-mer trie.
+  We prefill the subtree with the parent interval.
+
+  If the current match is longer than the possible $k$-mer extension, we
+  copy the interval, define a condition to stop the fast-forwarding and
+  copy known nucleotides from the long edge to the $k$-mer.
 #+end_src
-#+begin_src go <<Copy known nucleotides to the k-mer>>=
-  i := child.I
-  ok := true
-  for t := currentK + 1; t < ij.L; t++ {
+#+begin_src go <<Fast-forward long edge>>=
+  e.fillKmerSubtree(kmer, currentK + 1, iv)
+
+  t := currentK + 1
+  nonACGT := false
+  for ; t < ij.L; t++ {
 	  b := e.T[e.Sa[i] + t]
-	  //<<Validate the byte>>
-	  kmer[t] = b
+	  if byte2code(b) < 0 {
+		  nonACGT = true
+		  break
+	  }
+      kmer[t] = b
   }
-  //<<Continue usual k-mer trie traversal>>
-  return
+
+  //<<Deal with non-ACGT>>
 #+end_src
 #+begin_src latex
-  Of the current byte is invalid (has the code -1), we stop the
-  fast-forwarding and fill the $k$-mer subtree indexes.
+  If we have encountered a non-ACGT byte on the edge, we write the child
+  interval from the deepest valid point. Otherwise we call
+  \ty{walkKmerTrie} recursively to continue usual traversal.
 #+end_src
-#+begin_src go <<Validate the byte>>=
-  if byte2code(b) < 0 {
-	  ok = false
-	  e.fillKmerSubtree(kmer, t, next)
-	  break
-  }
-#+end_src
-#+begin_src latex
-  If the fast-forwading has been successful, we call \ty{walkKmerTrie}
-  recursively to continue the usual traversal.
-#+end_src
-#+begin_src go <<Continue usual k-mer trie traversal>>=
-  if ok {
-	  e.walkKmerTrie(kmer, ij.L, next)
+#+begin_src go <<Deal with non-ACGT>>=
+  if nonACGT {
+	  e.fillKmerSubtree(kmer, t, *ij)
+  } else {
+	  e.walkKmerTrie(kmer, t, *ij)
   }
 #+end_src
 #+begin_src latex
@@ -1146,7 +1154,7 @@ which of the possible extensions exist (\ty{A}, \ty{C}, \ty{G}, or
 #+begin_src go <<Methods>>=
   func (e *Esa) fillKmerSubtree(kmer []byte,
 	  currentK int, iv Minterval) {
-
+	  kmerLen := e.KmerLen
 	  if currentK < kmerLen {
 		  //<<Call \ty{fillKmerSubtree} recursively>>
 	  } else {
@@ -1191,6 +1199,8 @@ which of the possible extensions exist (\ty{A}, \ty{C}, \ty{G}, or
 #+end_src
 #+begin_src go <<Methods>>=
   func (e *Esa) MatchPrefCached(p []byte) *Minterval {
+	  kmerLen := e.KmerLen
+	  e.MatchPrefCachedCalls += 1
 	  m := len(p)
 	  //<<Respond to a short pattern>>
 	  idx, ok := kmer2index(p[0:kmerLen])
@@ -1221,13 +1231,15 @@ If the pattern is shorter than cached $k$-mers, we call the usual
 #+end_src
 #+begin_src go <<Access the lcp cache>>=
   ij := e.lcpCache[idx]
-  if ij.I < 0 || (ij.I == 0 && ij.J == 0 && ij.L == 0) { // assuming the cache prefilled with {I:-1,J:-1,L:0}
+  if ij.I < 0 || (ij.I == 0 && ij.J == 0 && ij.L == 0) {
 	  return e.MatchPref(p)
   }
+  e.LcpCacheHits += 1
 #+end_src
 #+begin_src latex
   \section{Testing}
-  The testing outline contains hooks for imports and the testing logic.
+  The testing outline contains hooks for imports and the testing
+  logic. We test the ESA implementation and LCP cache.
 #+end_src
 #+begin_src go <<esa_test.go>>=
   package esa
@@ -1236,21 +1248,23 @@ If the pattern is shorter than cached $k$-mers, we call the usual
 	  "testing"
 	  //<<Testing imports>>
   )
-  func TestEsa(t *testing.T) {
-	  //<<Testing>>
-  }
+  //<<Test ESA implementation>>
+  //<<Test LCP cache>>
 #+end_src
 #+begin_src latex
+  \subsection{Test ESA implementation}
   We compute a small suffix array and the corresponding $\mbox{lcp}$ and
   cld arrays. Then we compare what we get to what we want. After that,
   we test the matching.
 #+end_src
-#+begin_src go <<Testing>>=
-  //<<Compute small suffix array>>
-  //<<Compute $\mbox{lcp}$ array>>
-  //<<Compute cld array>>
-  //<<Compare results>>
-  //<<Test Matching>>
+#+begin_src go <<Test ESA implementation>>=
+  func TestEsa(t *testing.T) {
+	  //<<Compute small suffix array>>
+	  //<<Compute $\mbox{lcp}$ array>>
+	  //<<Compute cld array>>
+	  //<<Compare results>>
+	  //<<Test Matching>>
+  }
 #+end_src
 #+begin_src latex
   Our testing text is \texttt{abracadabra}. We compute its suffix array
@@ -1330,8 +1344,130 @@ If the pattern is shorter than cached $k$-mers, we call the usual
 #+begin_src go <<Test Matching>>=
   e := MakeEsa(text)
   pattern := []byte("racket")
-  iv := e.MatchPrefCached(pattern)
+  iv := e.MatchPref(pattern)
   if iv.L != 3 || e.Sa[iv.I] != 2 || e.Sa[iv.J] != 2 {
 	  t.Errorf("couldn't match %s\n", pattern)
   }
+#+end_src
+#+begin_src latex
+  \subsection{Test LCP cache}
+  We test lcp cache building.
+#+end_src
+#+begin_src go <<Test LCP cache>>=
+  //<<Test LCP cache building>>
+#+end_src
+#+begin_src latex
+  We build a small nucleotide suffix array, call the method for building
+  an LCP cache. Then we lookup cache values.
+#+end_src
+#+begin_src go <<Test LCP cache building>>=
+  func TestBuildLcpCache(t *testing.T) {
+	  //<<Compute small nucleotide ESA>>
+	  esa.buildLcpCache()
+	  //<<Check the cache>>
+  }
+#+end_src
+#+begin_src latex
+  We create a 14-nucleotide string of nucleotides \ty{[A, C, G, T]},
+  initialize the ESA struct and populate it with the text, SA, LCP, and
+  CLD as we compute them. We set the k-mer length to 2 nucleotides, that
+  is, we are going to cache lcp intervals for 16 2-mers.
+#+end_src
+#+begin_src go <<Compute small nucleotide ESA>>=
+  text := "ACGGGAAAGCGGAT"
+  var esa Esa
+  esa.T = []byte(text)
+  esa.T = append(esa.T, 0)
+  esa.Sa = Sa(esa.T)
+  esa.Lcp = Lcp(esa.T, esa.Sa)
+  esa.Lcp = append(esa.Lcp, -1)
+  esa.Cld = Cld(esa.Lcp)
+  esa.KmerLen = 2
+#+end_src
+#+begin_src latex
+  The ESA of our text looks like this:
+
+  \begin{verbatim}
+  i  sa suffix         lcp cld
+  -  -- ------         --- ---
+  0  14                -1  16
+  1  5  AAAGCGGAT      0   6
+  2  6  AAGCGGAT       2   2
+  3  0  ACGGGAAAGCGGAT 1   4
+  4  7  AGCGGAT        1   5
+  5  12 AT             1   3
+  6  9  CGGAT          0   8
+  7  1  CGGGAAAGCGGAT  3   7
+  8  4  GAAAGCGGAT     0   14
+  9  11 GAT            2   9
+  10 8  GCGGAT         1   11
+  11 3  GGAAAGCGGAT    1   13
+  12 10 GGAT           3   12
+  13 2  GGGAAAGCGGAT   2   10
+  14 13 T              0   1
+  \end{verbatim}
+#+end_src
+#+begin_src latex
+  We define the desired cache values and compare what we want with what
+  we get.
+#+end_src
+#+begin_src go <<Check the cache>>=
+  //<<Define the cache we want>>
+  get := esa.lcpCache
+
+  if !(reflect.DeepEqual(want, get)) {
+	  t.Errorf("want:\n%v\nget:\n%v\n", want, get)
+  }
+#+end_src
+#+begin_src latex
+  We import \ty{reflect}.
+#+end_src
+#+begin_src go <<Testing imports>>=
+  "reflect"
+#+end_src
+#+begin_src latex
+  For 16 implied 2-mers \ty{["AA", "AC", ... "TT"]}, we expect to see
+  the following indexes and intervals in the lcp cache:
+
+  \begin{verbatim}
+    kmer    i       [I..J]   matchLen
+    ---     -       ------   --------
+    AA      0       [1..2]   2
+    AC      1       [3..3]   2
+    AG      2       [4..4]   2
+    AT      3       [5..5]   2
+    CA      4       [0..14]  0
+    CC      5       [0..14]  0
+    CG      6       [0..14]  0
+    CT      7       [0..14]  0
+    GA      8       [8..9]   2
+    GC      9       [10..10] 2
+    GG      10      [11..13] 2
+    GT      11      [8..13]  1
+    TA      12      [14..14] 1
+    TC      13      [14..14] 1
+    TG      14      [14..14] 1
+    TT      15      [14..14] 1
+  \end{verbatim}
+
+  The interval \ty{[0..14]} corresponds to the root of the implied
+  suffix tree and is saved for k-mers, which are not prefixes of any
+  suffixes of the ESA.
+
+  We create an array of 16 empty intervals and fill it with interval
+  values from the table above. This is our desired cache.
+#+end_src
+#+begin_src go <<Define the cache we want>>=
+  ivs := make([]Minterval, 16)
+  starts := [16]int{1,3,4,5,0,0,0,0,8,10,11,8,14,14,14,14}
+  ends := [16]int{2,3,4,5,14,14,14,14,9,10,13,13,14,14,14,14}
+  lengths := [16]int{2,2,2,2,0,0,0,0,2,2,2,1,1,1,1,1}
+
+  for i := 0; i < 16; i++ {
+	  ivs[i].I = starts[i]
+	  ivs[i].J = ends[i]
+	  ivs[i].L = lengths[i]
+  }
+
+  want := ivs
 #+end_src

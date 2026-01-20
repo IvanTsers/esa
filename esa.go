@@ -25,13 +25,6 @@ type Esa struct {
 	Cld      []int
 	KmerLen  int
 	lcpCache []Minterval
-
-	//Debug fields
-	GetIntervalCallsInBuildCache int
-	GetIntervalCallsInMatchPref  int
-	LcpCacheHits                 int
-	MatchPrefCalls               int
-	MatchPrefCachedCalls         int
 }
 type Minterval struct {
 	I, J int
@@ -50,8 +43,6 @@ func (s *Stack) Push(i *Interval) {
 	(*s) = append(*s, i)
 }
 func (e *Esa) MatchPref(p []byte) *Minterval {
-	//debug
-	e.MatchPrefCalls += 1
 	k := 0
 	m := len(p)
 	var parent, child *Minterval
@@ -60,9 +51,6 @@ func (e *Esa) MatchPref(p []byte) *Minterval {
 	parent.J = len(e.T) - 1
 	for k < m {
 		child = e.GetInterval(parent, p[k])
-		//debug
-		e.GetIntervalCallsInMatchPref += 1
-		//
 		if child == nil {
 			parent.L = k
 			return parent
@@ -122,7 +110,6 @@ func (e *Esa) walkKmerTrie(kmer []byte,
 		kmer[currentK] = code2byte(code)
 		parent := iv
 		ij := e.GetInterval(&parent, kmer[currentK])
-		e.GetIntervalCallsInBuildCache += 1
 
 		if ij == nil {
 			e.fillKmerSubtree(kmer, currentK+1, iv)
@@ -188,7 +175,6 @@ func (e *Esa) fillKmerSubtree(kmer []byte,
 }
 func (e *Esa) MatchPrefCached(p []byte) *Minterval {
 	kmerLen := e.KmerLen
-	e.MatchPrefCachedCalls += 1
 	m := len(p)
 	if m <= kmerLen {
 		return e.MatchPref(p)
@@ -201,15 +187,11 @@ func (e *Esa) MatchPrefCached(p []byte) *Minterval {
 	if ij.I < 0 || (ij.I == 0 && ij.J == 0 && ij.L == 0) {
 		return e.MatchPref(p)
 	}
-	e.LcpCacheHits += 1
 	k := ij.L
 	parent := &ij
 	var child *Minterval
 	for k < m {
 		child = e.GetInterval(parent, p[k])
-		//debug
-		e.GetIntervalCallsInMatchPref += 1
-		//
 		if child == nil {
 			parent.L = k
 			return parent

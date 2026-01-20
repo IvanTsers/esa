@@ -1,8 +1,9 @@
 # `esa`
 ## Description
 Enhanced suffix array based on [`libdivsufsort`](https://github.com/y-256/libdivsufsort)
-## Author
+## Authors
 [Bernhard Haubold](http://guanine.evolbio.mpg.de/), `haubold@evolbio.mpg.de`
+[Ivan Tsers](https://github.com/IvanTsers/), `ivantsers@evolbio.mpg.de`
 ## Make documentation
 - Install additional packages  
   `$ sudo apt install gnuplot golang graphviz libgsl-dev make noweb

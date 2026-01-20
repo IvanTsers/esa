@@ -489,13 +489,6 @@
 	  Cld []int
 	  KmerLen int
 	  lcpCache []Minterval
-
-	  //Debug fields
-	  GetIntervalCallsInBuildCache int
-	  GetIntervalCallsInMatchPref int
-	  LcpCacheHits int
-	  MatchPrefCalls int
-	  MatchPrefCachedCalls int
   }
 #+end_src
 #+begin_src latex
@@ -522,8 +515,6 @@
 #+end_src
 #+begin_src go <<Methods>>=
   func (e *Esa) MatchPref(p []byte) *Minterval {
-	  //debug
-	  e.MatchPrefCalls += 1
 	  k := 0
 	  m := len(p)
 	  var parent, child *Minterval
@@ -554,9 +545,6 @@
 #+begin_src go <<Iterate over pattern>>=
   for k < m {
 	  child = e.GetInterval(parent, p[k])
-	  //debug
-	  e.GetIntervalCallsInMatchPref += 1
-	  //
 	  if child == nil {
 		  parent.L = k
 		  return parent
@@ -1032,7 +1020,6 @@
   kmer[currentK] = code2byte(code)
   parent := iv
   ij := e.GetInterval(&parent, kmer[currentK])
-  e.GetIntervalCallsInBuildCache += 1
 
   //<<The extension doesn't exist>>
   //<<The extension is a singleton interval>>
@@ -1200,7 +1187,6 @@ which of the possible extensions exist (\ty{A}, \ty{C}, \ty{G}, or
 #+begin_src go <<Methods>>=
   func (e *Esa) MatchPrefCached(p []byte) *Minterval {
 	  kmerLen := e.KmerLen
-	  e.MatchPrefCachedCalls += 1
 	  m := len(p)
 	  //<<Respond to a short pattern>>
 	  idx, ok := kmer2index(p[0:kmerLen])
@@ -1234,7 +1220,6 @@ If the pattern is shorter than cached $k$-mers, we call the usual
   if ij.I < 0 || (ij.I == 0 && ij.J == 0 && ij.L == 0) {
 	  return e.MatchPref(p)
   }
-  e.LcpCacheHits += 1
 #+end_src
 #+begin_src latex
   \section{Testing}
